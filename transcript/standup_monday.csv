@@ -1,4 +1,4 @@
-seconds,speaker,sentence
+time,speaker,sentence
 00:00:00,Alex,Good morning team
 00:00:03,Jordan,Morning Alex ready for another week
 00:00:06,Alex,Let's go around with updates

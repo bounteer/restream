@@ -69,23 +69,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
-name = "casset"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "csv",
- "futures-util",
- "open",
- "poem",
- "poem-openapi",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.20.1",
- "uuid",
-]
-
-[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1080,6 +1063,23 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "restream"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "futures-util",
+ "open",
+ "poem",
+ "poem-openapi",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.20.1",
+ "uuid",
+]
 
 [[package]]
 name = "rfc7239"

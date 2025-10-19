@@ -1,22 +1,26 @@
+use futures_util::{SinkExt, StreamExt};
 use poem::EndpointExt;
 use poem::{Result, Route, Server, middleware::Tracing};
-use poem_openapi::{OpenApi, ApiResponse, Object, payload::Json, OpenApiService};
+use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService, payload::Json};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path as StdPath;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use uuid::Uuid;
-use tokio_tungstenite::{tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use uuid::Uuid;
+
+fn default_filename() -> String {
+    "intake_call.csv".to_string()
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Object)]
 struct TranscriptRecord {
-    /// Time in seconds
-    seconds: String,
+    /// Time in time
+    time: String,
     /// Speaker name
     speaker: String,
     /// Transcript sentence
@@ -31,12 +35,6 @@ struct TranscriptFile {
     records: Vec<TranscriptRecord>,
 }
 
-#[derive(Deserialize, Object)]
-struct RerunRequest {
-    /// Filename of transcript to rerun
-    filename: String,
-}
-
 #[derive(ApiResponse)]
 enum TranscriptResponse {
     /// List of transcript files
@@ -46,27 +44,27 @@ enum TranscriptResponse {
 
 #[derive(Serialize, Deserialize, Debug, Object)]
 struct WebsocketInfo {
-    /// WebSocket URL for rerun connection
+    /// WebSocket URL for rewind connection
     websocket_url: String,
-    /// Session ID for the rerun
+    /// Session ID for the rewind
     session_id: String,
     /// Port number for WebSocket connection
     port: u16,
 }
 
 #[derive(Debug, Clone)]
-struct RerunSession {
+struct RewindSession {
     session_id: String,
     filename: String,
     records: Vec<TranscriptRecord>,
     current_index: usize,
 }
 
-type SessionStore = Arc<Mutex<HashMap<String, RerunSession>>>;
+type SessionStore = Arc<Mutex<HashMap<String, RewindSession>>>;
 
 #[derive(ApiResponse)]
-enum RerunResponse {
-    /// Rerun initiated successfully with websocket information
+enum RewindResponse {
+    /// Rewind initiated successfully with websocket information
     #[oai(status = 200)]
     Ok(Json<WebsocketInfo>),
 }
@@ -89,48 +87,53 @@ impl Api {
         }
     }
 
-    /// Rerun a transcript by filename
-    #[oai(path = "/rerun", method = "post")]
-    async fn handle_rerun(&self, request: Json<RerunRequest>) -> RerunResponse {
-        println!("Rerunning transcript: {}", request.filename);
-        
+    /// Rewind a transcript by filename (defaults to intake_call.csv)
+    #[oai(path = "/rewind", method = "get")]
+    async fn handle_rewind(
+        &self,
+        #[oai(name = "filename", default = "default_filename")]
+        filename: poem_openapi::param::Query<String>,
+    ) -> RewindResponse {
+        let filename = filename.0;
+        println!("Rewinding transcript: {}", filename);
+
         // Load transcript from file
-        let transcript_path = format!("transcript/{}", request.filename);
+        let transcript_path = format!("transcript/{}", filename);
         let path = StdPath::new(&transcript_path);
-        
+
         match load_transcript_from_file(path).await {
             Ok(records) => {
                 // Create new session
                 let session_id = Uuid::new_v4().to_string();
-                let session = RerunSession {
+                let session = RewindSession {
                     session_id: session_id.clone(),
-                    filename: request.filename.clone(),
+                    filename: filename.clone(),
                     records,
                     current_index: 0,
                 };
-                
+
                 // Store session
                 let mut sessions = self.sessions.lock().await;
                 sessions.insert(session_id.clone(), session);
-                
+
                 // Return websocket information
                 let websocket_info = WebsocketInfo {
                     websocket_url: format!("ws://127.0.0.1:3031/ws/{}", session_id),
                     session_id,
                     port: 3031,
                 };
-                
-                RerunResponse::Ok(Json(websocket_info))
+
+                RewindResponse::Ok(Json(websocket_info))
             }
             Err(e) => {
-                eprintln!("Error loading transcript {}: {}", request.filename, e);
+                eprintln!("Error loading transcript {}: {}", filename, e);
                 // Return error as websocket info for now (could be improved)
                 let websocket_info = WebsocketInfo {
                     websocket_url: "".to_string(),
                     session_id: "".to_string(),
                     port: 0,
                 };
-                RerunResponse::Ok(Json(websocket_info))
+                RewindResponse::Ok(Json(websocket_info))
             }
         }
     }
@@ -138,15 +141,15 @@ impl Api {
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    println!("Starting Casset OpenAPI Server...");
+    println!("Starting restream OpenAPI Server...");
 
     let sessions: SessionStore = Arc::new(Mutex::new(HashMap::new()));
     let api = Api {
         sessions: sessions.clone(),
     };
 
-    let api_service = OpenApiService::new(api, "Casset API", "1.0")
-        .server("http://127.0.0.1:3030/api");
+    let api_service =
+        OpenApiService::new(api, "restream API", "1.0").server("http://127.0.0.1:3030/api");
     let ui = api_service.swagger_ui();
     let spec = api_service.spec_endpoint();
 
@@ -158,9 +161,7 @@ async fn main() -> Result<(), std::io::Error> {
 
     // Start WebSocket server
     let ws_sessions = sessions.clone();
-    let ws_handle = tokio::spawn(async move {
-        start_websocket_server(ws_sessions).await
-    });
+    let ws_handle = tokio::spawn(async move { start_websocket_server(ws_sessions).await });
 
     // Start server in background
     let server_handle = tokio::spawn(async move {
@@ -185,10 +186,9 @@ async fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-
 async fn load_all_transcripts() -> anyhow::Result<Vec<TranscriptFile>> {
     let transcript_dir = "transcript/";
-    
+
     if !StdPath::new(transcript_dir).exists() {
         return Ok(vec![]);
     }
@@ -199,7 +199,7 @@ async fn load_all_transcripts() -> anyhow::Result<Vec<TranscriptFile>> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        
+
         if path.extension().and_then(|s| s.to_str()) == Some("csv") {
             if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
                 match load_transcript_from_file(&path).await {
@@ -220,28 +220,28 @@ async fn load_all_transcripts() -> anyhow::Result<Vec<TranscriptFile>> {
     Ok(transcript_files)
 }
 
-fn parse_time_to_seconds(time_str: &str) -> i32 {
+fn parse_time_to_time(time_str: &str) -> i32 {
     let parts: Vec<&str> = time_str.split(':').collect();
-    
+
     match parts.len() {
         3 => {
             // HH:MM:SS format
             let hours = parts[0].parse::<i32>().unwrap_or(0);
             let minutes = parts[1].parse::<i32>().unwrap_or(0);
-            let seconds = parts[2].parse::<i32>().unwrap_or(0);
-            hours * 3600 + minutes * 60 + seconds
+            let time = parts[2].parse::<i32>().unwrap_or(0);
+            hours * 3600 + minutes * 60 + time
         }
         2 => {
             // MM:SS format
             let minutes = parts[0].parse::<i32>().unwrap_or(0);
-            let seconds = parts[1].parse::<i32>().unwrap_or(0);
-            minutes * 60 + seconds
+            let time = parts[1].parse::<i32>().unwrap_or(0);
+            minutes * 60 + time
         }
         1 => {
-            // Just seconds
+            // Just time
             parts[0].parse::<i32>().unwrap_or(0)
         }
-        _ => 0
+        _ => 0,
     }
 }
 
@@ -277,11 +277,11 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
 
     let session_id = Arc::new(Mutex::new(String::new()));
     let session_id_clone = session_id.clone();
-    
+
     let callback = move |req: &Request, response: Response| {
         let path = req.uri().path();
         println!("WebSocket upgrade request path: {}", path);
-        
+
         // Extract session ID from path like "/ws/{session_id}"
         if let Some(extracted_id) = path.strip_prefix("/ws/") {
             if !extracted_id.is_empty() {
@@ -291,7 +291,7 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
                 }
             }
         }
-        
+
         Ok(response)
     };
 
@@ -332,7 +332,10 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
 
 async fn broadcast_session_messages(
     session_id: &str,
-    ws_sender: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
+    ws_sender: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
     sessions: SessionStore,
 ) -> anyhow::Result<()> {
     let session = {
@@ -341,41 +344,48 @@ async fn broadcast_session_messages(
     };
 
     if let Some(session) = session {
-        let mut last_seconds = 0;
-        
+        let mut last_time = 0;
+
         // Broadcast all messages from the session
         for record in &session.records {
-            // Parse the seconds field from HH:MM:SS format to total seconds
-            let current_seconds = parse_time_to_seconds(&record.seconds);
-            
+            // Parse the time field from HH:MM:SS format to total time
+            let current_time = parse_time_to_time(&record.time);
+
             // Calculate how long we should wait before sending this message
-            let wait_duration = if current_seconds > last_seconds {
-                current_seconds - last_seconds
+            let wait_duration = if current_time > last_time {
+                current_time - last_time
             } else {
                 0
             };
-            
+
             // Wait for the calculated duration
             if wait_duration > 0 {
                 tokio::time::sleep(tokio::time::Duration::from_secs(wait_duration as u64)).await;
             }
-            
+
             let message = serde_json::to_string(&record)?;
             ws_sender.send(Message::Text(message)).await?;
-            
-            last_seconds = current_seconds;
-            println!("Sent message at {}s: {} - {}", current_seconds, record.speaker, record.sentence);
+
+            last_time = current_time;
+            println!(
+                "Sent message at {}s: {} - {}",
+                current_time, record.speaker, record.sentence
+            );
         }
 
         // Send completion message
-        ws_sender.send(Message::Text("SESSION_COMPLETE".to_string())).await?;
-        
+        ws_sender
+            .send(Message::Text("SESSION_COMPLETE".to_string()))
+            .await?;
+
         // Clean up session after broadcasting is complete
         let mut sessions_guard = sessions.lock().await;
         sessions_guard.remove(session_id);
         println!("Session {} completed and cleaned up", session_id);
     } else {
-        ws_sender.send(Message::Text("SESSION_NOT_FOUND".to_string())).await?;
+        ws_sender
+            .send(Message::Text("SESSION_NOT_FOUND".to_string()))
+            .await?;
     }
 
     Ok(())

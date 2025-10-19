@@ -1,0 +1,59 @@
+time,speaker,sentence
+00:00:00,Darryll,"Hi Mike, so you need a JavaScript developer?
+"
+00:00:05,Mike,"Yeah, we need a full-stack JavaScript developer for BetSquad. Someone with React and Node.js experience.
+"
+00:00:15,Darryll,"OK great. How many years of experience?
+"
+00:00:19,Mike,"I'd say at least 5 years, someone senior who can hit the ground running. We're building a betting platform, so ideally they'd have some experience in that space.
+"
+00:00:32,Darryll,"Got it. What about salary?
+"
+00:00:36,Mike,"We're thinking £80-100k depending on experience. Look, the main thing is they need to be really strong technically and understand our industry.
+"
+00:00:48,Darryll,"Makes sense. Any other technologies they should know?
+"
+00:00:54,Mike,"Well, we use PostgreSQL, Redis, the usual stuff. Real-time data handling is important - WebSockets and that kind of thing. Oh, and they need to understand compliance, UKGC regulations, responsible gambling features. That's all pretty critical in our industry.
+"
+00:01:15,Darryll,"OK, I'll add those to the job description. Anything else?
+"
+00:01:20,Mike,"Testing is important - Jest, React Testing Library. We handle money so we can't have bugs. TypeScript would be nice. AWS experience would help. Payment integration experience is valuable. There's quite a lot actually...
+"
+00:01:38,Darryll,"Right, I'll include all of those. Remote or office?
+"
+00:01:43,Mike,"Flexible, but ideally they'd come to our London office once or twice a week.
+"
+00:01:50,Darryll,"Perfect. When do you need them to start?
+"
+00:01:54,Mike,"ASAP really, but we want the right person.
+"
+00:01:58,Darryll,"Great. I think I have everything I need. I'll write up a job description and send it over for your approval.
+"
+00:02:06,Mike,"Wait, I should probably mention - the gambling experience is really important. They need to have worked with betting platforms or at least fintech before. It's quite specialized.
+"
+00:02:20,Darryll,"Oh OK, I'll make sure to include that. Senior JavaScript developer with betting experience.
+"
+00:02:27,Mike,"Yeah, and make sure they know React really well - hooks, state management, the works. Same with Node.js - they need to build APIs that can handle thousands of concurrent users during big matches.
+"
+00:02:42,Darryll,"Got it. React, Node.js, betting experience. I'll get this posted right away.
+"
+00:02:49,Mike,"Also, they need to pass enhanced background checks - that's a regulatory requirement.
+"
+00:02:55,Darryll,"OK, I'll add that to the notes. Thanks Mike!
+"
+00:03:00,Mike,"Actually, there are other skills that would be nice - Docker, GraphQL, React Native, microservices. But I guess we can discuss those with candidates later.
+"
+00:03:12,Darryll,"Sure, I'll mention them in the nice-to-have section.
+"
+00:03:16,Mike,"And just to be clear, things like design tools or game development experience aren't relevant at all. We're not building video games.
+"
+00:03:26,Darryll,"Understood. No game development needed.
+"
+00:03:30,Mike,"I feel like I'm throwing a lot at you. Should we maybe schedule another call to go through this properly?
+"
+00:03:37,Darryll,"No, no, I think I've got it all. JavaScript developer, 5 years experience, React, Node, betting industry, £80-100k. I'll send you the job description tomorrow.
+"
+00:03:49,Mike,"Alright... just make sure the betting industry experience comes through as really important. It's not just a nice-to-have.
+"
+00:03:57,Darryll,"Will do! Thanks Mike, talk soon.
+"

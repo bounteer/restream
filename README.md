@@ -1,4 +1,4 @@
-# Casset: play transcript in websocket
+# Restream: play transcript in websocket
 
 Input: Transcript
 Output: websocket message

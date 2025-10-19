@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Rust project named "casset" using the 2024 edition. The project is currently minimal with only a basic main.rs file containing a "Hello, world!" program.
+This is a Rust project named "restream" using the 2024 edition. The project is currently minimal with only a basic main.rs file containing a "Hello, world!" program.
 
 ## Development Commands
 
