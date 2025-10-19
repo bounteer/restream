@@ -1,3 +1,5 @@
+use restream::interface::{Broadcaster, TranscriptRecord, TranscriptFile, BroadcastMessage};
+use restream::adapter::{WebSocketBroadcaster, WebhookBroadcaster, SessionStore};
 use futures_util::{SinkExt, StreamExt};
 use poem::EndpointExt;
 use poem::{Result, Route, Server, middleware::Tracing};
@@ -22,31 +24,10 @@ fn default_filename() -> String {
     "intake_call.csv".to_string()
 }
 
-fn default_webhook_url() -> String {
-    PRODUCTION_WEBHOOK_URL.to_string()
-}
-
 fn default_test() -> bool {
     false
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Object)]
-struct TranscriptRecord {
-    /// Time in time
-    time: String,
-    /// Speaker name
-    speaker: String,
-    /// Transcript sentence
-    sentence: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Object)]
-struct TranscriptFile {
-    /// Filename of the transcript
-    filename: String,
-    /// List of transcript records
-    records: Vec<TranscriptRecord>,
-}
 
 #[derive(ApiResponse)]
 enum TranscriptResponse {
@@ -75,15 +56,7 @@ struct WebhookBroadcastRequest {
     filename: String,
 }
 
-#[derive(Debug, Clone)]
-struct RewindSession {
-    session_id: String,
-    filename: String,
-    records: Vec<TranscriptRecord>,
-    current_index: usize,
-}
 
-type SessionStore = Arc<Mutex<HashMap<String, RewindSession>>>;
 
 #[derive(ApiResponse)]
 enum RewindResponse {
@@ -121,8 +94,8 @@ impl Api {
     }
 
     /// Rewind a transcript by filename (defaults to intake_call.csv)
-    #[oai(path = "/rewind", method = "get")]
-    async fn handle_rewind(
+    #[oai(path = "/websocket-broadcast", method = "get")]
+    async fn handle_websocket_broadcast(
         &self,
         #[oai(name = "filename", default = "default_filename")]
         filename: poem_openapi::param::Query<String>,
@@ -136,27 +109,41 @@ impl Api {
 
         match load_transcript_from_file(path).await {
             Ok(records) => {
-                // Create new session
+                // Create WebSocket broadcaster
                 let session_id = Uuid::new_v4().to_string();
-                let session = RewindSession {
+                let broadcaster = WebSocketBroadcaster {
                     session_id: session_id.clone(),
-                    filename: filename.clone(),
-                    records,
-                    current_index: 0,
+                    sessions: self.sessions.clone(),
                 };
 
-                // Store session
-                let mut sessions = self.sessions.lock().await;
-                sessions.insert(session_id.clone(), session);
+                // Use the broadcaster to setup the session
+                match broadcaster.broadcast(session_id.clone(), records).await {
+                    Ok(_) => {
+                        // Update the session with the filename
+                        let mut sessions = self.sessions.lock().await;
+                        if let Some(session) = sessions.get_mut(&session_id) {
+                            session.filename = filename.clone();
+                        }
 
-                // Return websocket information
-                let websocket_info = WebsocketInfo {
-                    websocket_url: format!("ws://127.0.0.1:3031/ws/{}", session_id),
-                    session_id,
-                    port: 3031,
-                };
+                        // Return websocket information
+                        let websocket_info = WebsocketInfo {
+                            websocket_url: format!("ws://127.0.0.1:3031/ws/{}", session_id),
+                            session_id,
+                            port: 3031,
+                        };
 
-                RewindResponse::Ok(Json(websocket_info))
+                        RewindResponse::Ok(Json(websocket_info))
+                    }
+                    Err(e) => {
+                        eprintln!("Error setting up websocket broadcast: {}", e);
+                        let websocket_info = WebsocketInfo {
+                            websocket_url: "".to_string(),
+                            session_id: "".to_string(),
+                            port: 0,
+                        };
+                        RewindResponse::Ok(Json(websocket_info))
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("Error loading transcript {}: {}", filename, e);
@@ -203,8 +190,20 @@ impl Api {
 
         match load_transcript_from_file(path).await {
             Ok(records) => {
+                // Create WebHook broadcaster
+                let broadcaster = WebhookBroadcaster {
+                    webhook_url: webhook_url.clone(),
+                };
+
                 // Start broadcasting in background
-                tokio::spawn(broadcast_to_webhook(webhook_url.clone(), records));
+                // Generate session ID for webhook broadcast
+                let webhook_session_id = Uuid::new_v4().to_string();
+                
+                tokio::spawn(async move {
+                    if let Err(e) = broadcaster.broadcast(webhook_session_id, records).await {
+                        eprintln!("Webhook broadcast failed: {}", e);
+                    }
+                });
 
                 WebhookBroadcastResponse::Ok(Json(serde_json::json!({
                     "status": "success",
@@ -478,88 +477,3 @@ async fn broadcast_session_messages(
     Ok(())
 }
 
-async fn broadcast_to_webhook(
-    webhook_url: String,
-    records: Vec<TranscriptRecord>,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let mut last_time = 0;
-
-    println!("Starting webhook broadcast to: {}", webhook_url);
-
-    for record in &records {
-        // Parse the time field from HH:MM:SS format to total seconds
-        let current_time = parse_time_to_time(&record.time);
-
-        // Calculate how long we should wait before sending this message
-        let wait_duration = if current_time > last_time {
-            current_time - last_time
-        } else {
-            0
-        };
-
-        // Wait for the calculated duration
-        if wait_duration > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_secs(wait_duration as u64)).await;
-        }
-
-        // Send POST request to webhook
-        let response = client.post(&webhook_url).json(&record).send().await;
-
-        match response {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    println!(
-                        "✓ Sent to webhook at {}s: {} - {}",
-                        current_time, record.speaker, record.sentence
-                    );
-                } else {
-                    eprintln!(
-                        "✗ Webhook returned status {}: {} - {}",
-                        resp.status(),
-                        record.speaker,
-                        record.sentence
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "✗ Failed to send to webhook: {} - {} - {}",
-                    e, record.speaker, record.sentence
-                );
-            }
-        }
-
-        last_time = current_time;
-    }
-
-    // Send completion message
-    let completion_message = serde_json::json!({
-        "status": "complete",
-        "message": "Broadcast completed"
-    });
-
-    match client
-        .post(&webhook_url)
-        .json(&completion_message)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                println!("✓ Sent completion message to webhook");
-            } else {
-                eprintln!(
-                    "✗ Failed to send completion message, status: {}",
-                    resp.status()
-                );
-            }
-        }
-        Err(e) => {
-            eprintln!("✗ Failed to send completion message: {}", e);
-        }
-    }
-
-    println!("Webhook broadcast completed");
-    Ok(())
-}
