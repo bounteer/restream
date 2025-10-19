@@ -13,8 +13,21 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use uuid::Uuid;
 
+const TEST_WEBHOOK_URL: &str =
+    "https://n8n.bounteer.com/webhook-test/00fbc28e-a081-4f79-85d0-68b063cbac23";
+const PRODUCTION_WEBHOOK_URL: &str =
+    "https://n8n.bounteer.com/webhook/00fbc28e-a081-4f79-85d0-68b063cbac23";
+
 fn default_filename() -> String {
     "intake_call.csv".to_string()
+}
+
+fn default_webhook_url() -> String {
+    PRODUCTION_WEBHOOK_URL.to_string()
+}
+
+fn default_test() -> bool {
+    false
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Object)]
@@ -52,6 +65,16 @@ struct WebsocketInfo {
     port: u16,
 }
 
+#[derive(Serialize, Deserialize, Debug, Object)]
+struct WebhookBroadcastRequest {
+    /// Use test environment instead of production (defaults to false)
+    #[serde(default)]
+    use_test: bool,
+    /// Filename of the transcript to broadcast (defaults to intake_call.csv)
+    #[serde(default = "default_filename")]
+    filename: String,
+}
+
 #[derive(Debug, Clone)]
 struct RewindSession {
     session_id: String,
@@ -67,6 +90,16 @@ enum RewindResponse {
     /// Rewind initiated successfully with websocket information
     #[oai(status = 200)]
     Ok(Json<WebsocketInfo>),
+}
+
+#[derive(ApiResponse)]
+enum WebhookBroadcastResponse {
+    /// Webhook broadcast initiated successfully
+    #[oai(status = 200)]
+    Ok(Json<serde_json::Value>),
+    /// Error occurred during broadcast
+    #[oai(status = 400)]
+    BadRequest(Json<serde_json::Value>),
 }
 
 struct Api {
@@ -134,6 +167,60 @@ impl Api {
                     port: 0,
                 };
                 RewindResponse::Ok(Json(websocket_info))
+            }
+        }
+    }
+
+    /// Broadcast a transcript via webhook using POST requests
+    #[oai(path = "/webhook-broadcast", method = "get")]
+    async fn handle_webhook_broadcast(
+        &self,
+        #[oai(name = "use_test", default = "default_test")] use_test: poem_openapi::param::Query<
+            bool,
+        >,
+        #[oai(name = "filename", default = "default_filename")]
+        filename: poem_openapi::param::Query<String>,
+    ) -> WebhookBroadcastResponse {
+        let use_test = use_test.0;
+        let filename = filename.0;
+
+        // Determine the webhook URL to use
+        let webhook_url = if use_test {
+            TEST_WEBHOOK_URL.to_string()
+        } else {
+            PRODUCTION_WEBHOOK_URL.to_string()
+        };
+
+        let environment = if use_test { "test" } else { "production" };
+        println!(
+            "Starting webhook broadcast to {} environment: {} for file: {}",
+            environment, webhook_url, filename
+        );
+
+        // Load transcript from file
+        let transcript_path = format!("transcript/{}", filename);
+        let path = StdPath::new(&transcript_path);
+
+        match load_transcript_from_file(path).await {
+            Ok(records) => {
+                // Start broadcasting in background
+                tokio::spawn(broadcast_to_webhook(webhook_url.clone(), records));
+
+                WebhookBroadcastResponse::Ok(Json(serde_json::json!({
+                    "status": "success",
+                    "message": "Webhook broadcast started",
+                    "filename": filename,
+                    "webhook_url": webhook_url,
+                    "environment": environment
+                })))
+            }
+            Err(e) => {
+                eprintln!("Error loading transcript {}: {}", filename, e);
+                WebhookBroadcastResponse::BadRequest(Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("Failed to load transcript: {}", e),
+                    "filename": filename
+                })))
             }
         }
     }
@@ -388,5 +475,91 @@ async fn broadcast_session_messages(
             .await?;
     }
 
+    Ok(())
+}
+
+async fn broadcast_to_webhook(
+    webhook_url: String,
+    records: Vec<TranscriptRecord>,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let mut last_time = 0;
+
+    println!("Starting webhook broadcast to: {}", webhook_url);
+
+    for record in &records {
+        // Parse the time field from HH:MM:SS format to total seconds
+        let current_time = parse_time_to_time(&record.time);
+
+        // Calculate how long we should wait before sending this message
+        let wait_duration = if current_time > last_time {
+            current_time - last_time
+        } else {
+            0
+        };
+
+        // Wait for the calculated duration
+        if wait_duration > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait_duration as u64)).await;
+        }
+
+        // Send POST request to webhook
+        let response = client.post(&webhook_url).json(&record).send().await;
+
+        match response {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    println!(
+                        "✓ Sent to webhook at {}s: {} - {}",
+                        current_time, record.speaker, record.sentence
+                    );
+                } else {
+                    eprintln!(
+                        "✗ Webhook returned status {}: {} - {}",
+                        resp.status(),
+                        record.speaker,
+                        record.sentence
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "✗ Failed to send to webhook: {} - {} - {}",
+                    e, record.speaker, record.sentence
+                );
+            }
+        }
+
+        last_time = current_time;
+    }
+
+    // Send completion message
+    let completion_message = serde_json::json!({
+        "status": "complete",
+        "message": "Broadcast completed"
+    });
+
+    match client
+        .post(&webhook_url)
+        .json(&completion_message)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                println!("✓ Sent completion message to webhook");
+            } else {
+                eprintln!(
+                    "✗ Failed to send completion message, status: {}",
+                    resp.status()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("✗ Failed to send completion message: {}", e);
+        }
+    }
+
+    println!("Webhook broadcast completed");
     Ok(())
 }
