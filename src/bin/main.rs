@@ -1,24 +1,27 @@
-use restream::interface::{Broadcaster, TranscriptRecord, TranscriptFile, BroadcastMessage};
-use restream::adapter::{WebSocketBroadcaster, WebhookBroadcaster, SessionStore};
 use futures_util::{SinkExt, StreamExt};
 use poem::EndpointExt;
 use poem::{Result, Route, Server, middleware::Tracing};
 use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService, payload::Json};
+use restream::adapter::{
+    FirefliesBridge, FirefliesConfig, FirefliesWebhookForwarder, SessionStore,
+    WebSocketBroadcaster, WebhookBroadcaster,
+};
+use restream::consts::{WEBHOOK_URL_PROD, WEBHOOK_URL_TEST};
+use restream::interface::{Broadcaster, TranscriptFile, TranscriptRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path as StdPath;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::Directive;
 use uuid::Uuid;
-
-const TEST_WEBHOOK_URL: &str =
-    "https://n8n.bounteer.com/webhook-test/00fbc28e-a081-4f79-85d0-68b063cbac23";
-const PRODUCTION_WEBHOOK_URL: &str =
-    "https://n8n.bounteer.com/webhook/00fbc28e-a081-4f79-85d0-68b063cbac23";
 
 fn default_filename() -> String {
     "intake_call.csv".to_string()
@@ -27,7 +30,6 @@ fn default_filename() -> String {
 fn default_test() -> bool {
     false
 }
-
 
 #[derive(ApiResponse)]
 enum TranscriptResponse {
@@ -56,7 +58,15 @@ struct WebhookBroadcastRequest {
     filename: String,
 }
 
-
+#[derive(Serialize, Deserialize, Debug, Object)]
+pub struct FirefliesBridgeRequest {
+    /// Fireflies API token
+    pub api_token: String,
+    /// Fireflies transcript ID to listen to
+    pub transcript_id: String,
+    /// Webhook URL to forward events to
+    pub webhook_url: String,
+}
 
 #[derive(ApiResponse)]
 enum RewindResponse {
@@ -75,6 +85,16 @@ enum WebhookBroadcastResponse {
     BadRequest(Json<serde_json::Value>),
 }
 
+#[derive(ApiResponse)]
+enum FirefliesBridgeResponse {
+    /// Fireflies bridge started successfully
+    #[oai(status = 200)]
+    Ok(Json<serde_json::Value>),
+    /// Error occurred during bridge setup
+    #[oai(status = 400)]
+    BadRequest(Json<serde_json::Value>),
+}
+
 struct Api {
     sessions: SessionStore,
 }
@@ -87,7 +107,7 @@ impl Api {
         match load_all_transcripts().await {
             Ok(transcripts) => TranscriptResponse::Ok(Json(transcripts)),
             Err(e) => {
-                eprintln!("Error loading transcripts: {}", e);
+                error!("Error loading transcripts: {}", e);
                 TranscriptResponse::Ok(Json(vec![]))
             }
         }
@@ -101,7 +121,7 @@ impl Api {
         filename: poem_openapi::param::Query<String>,
     ) -> RewindResponse {
         let filename = filename.0;
-        println!("Rewinding transcript: {}", filename);
+        info!("Rewinding transcript: {}", filename);
 
         // Load transcript from file
         let transcript_path = format!("transcript/{}", filename);
@@ -135,7 +155,7 @@ impl Api {
                         RewindResponse::Ok(Json(websocket_info))
                     }
                     Err(e) => {
-                        eprintln!("Error setting up websocket broadcast: {}", e);
+                        error!("Error setting up websocket broadcast: {}", e);
                         let websocket_info = WebsocketInfo {
                             websocket_url: "".to_string(),
                             session_id: "".to_string(),
@@ -146,7 +166,7 @@ impl Api {
                 }
             }
             Err(e) => {
-                eprintln!("Error loading transcript {}: {}", filename, e);
+                error!("Error loading transcript {}: {}", filename, e);
                 // Return error as websocket info for now (could be improved)
                 let websocket_info = WebsocketInfo {
                     websocket_url: "".to_string(),
@@ -173,13 +193,13 @@ impl Api {
 
         // Determine the webhook URL to use
         let webhook_url = if use_test {
-            TEST_WEBHOOK_URL.to_string()
+            WEBHOOK_URL_TEST.to_string()
         } else {
-            PRODUCTION_WEBHOOK_URL.to_string()
+            WEBHOOK_URL_PROD.to_string()
         };
 
         let environment = if use_test { "test" } else { "production" };
-        println!(
+        info!(
             "Starting webhook broadcast to {} environment: {} for file: {}",
             environment, webhook_url, filename
         );
@@ -198,10 +218,10 @@ impl Api {
                 // Start broadcasting in background
                 // Generate session ID for webhook broadcast
                 let webhook_session_id = Uuid::new_v4().to_string();
-                
+
                 tokio::spawn(async move {
                     if let Err(e) = broadcaster.broadcast(webhook_session_id, records).await {
-                        eprintln!("Webhook broadcast failed: {}", e);
+                        error!("Webhook broadcast failed: {}", e);
                     }
                 });
 
@@ -214,7 +234,7 @@ impl Api {
                 })))
             }
             Err(e) => {
-                eprintln!("Error loading transcript {}: {}", filename, e);
+                error!("Error loading transcript {}: {}", filename, e);
                 WebhookBroadcastResponse::BadRequest(Json(serde_json::json!({
                     "status": "error",
                     "message": format!("Failed to load transcript: {}", e),
@@ -223,11 +243,90 @@ impl Api {
             }
         }
     }
+
+    /// Start Fireflies to webhook bridge
+    #[oai(path = "/fireflies-bridge", method = "post")]
+    async fn start_fireflies_bridge(
+        &self,
+        bridge_request: Json<FirefliesBridgeRequest>,
+    ) -> FirefliesBridgeResponse {
+        let req = bridge_request.0;
+        info!(
+            "Starting Fireflies bridge for transcript: {} -> {}",
+            req.transcript_id, req.webhook_url
+        );
+
+        let config = FirefliesConfig {
+            api_token: req.api_token,
+            transcript_id: req.transcript_id.clone(),
+            webhook_url: req.webhook_url.clone(),
+        };
+
+        match FirefliesBridge::new(config) {
+            Ok((bridge, receiver)) => {
+                // Start the webhook forwarder
+                let forwarder = FirefliesWebhookForwarder::new(req.webhook_url.clone());
+                let forwarder_handle = tokio::spawn(async move {
+                    if let Err(e) = forwarder.start_forwarding(receiver).await {
+                        error!("Webhook forwarder error: {}", e);
+                    }
+                });
+
+                // Start the Fireflies bridge
+                let bridge_handle = tokio::spawn(async move {
+                    if let Err(e) = bridge.start().await {
+                        error!("Fireflies bridge error: {}", e);
+                    }
+                });
+
+                // Store handles if needed (for now just fire and forget)
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = bridge_handle => {},
+                        _ = forwarder_handle => {},
+                    }
+                });
+
+                FirefliesBridgeResponse::Ok(Json(serde_json::json!({
+                    "status": "success",
+                    "message": "Fireflies bridge started successfully",
+                    "transcript_id": req.transcript_id,
+                    "webhook_url": req.webhook_url
+                })))
+            }
+            Err(e) => {
+                error!("Error starting Fireflies bridge: {}", e);
+                FirefliesBridgeResponse::BadRequest(Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("Failed to start Fireflies bridge: {}", e),
+                    "transcript_id": req.transcript_id
+                })))
+            }
+        }
+    }
+}
+
+fn create_log_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {
+    let filter = EnvFilter::new("info")
+        .add_directive(Directive::from_str("aws_config::profile::credentials=off")?)
+        .add_directive(Directive::from_str("sqlx::query=off")?)
+        .add_directive(Directive::from_str("sqlx::postgres::notice=off")?);
+    Ok(filter)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    println!("Starting restream OpenAPI Server...");
+    let filter = create_log_filter().unwrap_or_else(|err| {
+        eprintln!("Failed to parse tracing directives {err}. Falling back to 'info'.",);
+        EnvFilter::new("info")
+    });
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(true)
+        .init();
+
+    info!("Starting restream OpenAPI Server...");
 
     let sessions: SessionStore = Arc::new(Mutex::new(HashMap::new()));
     let api = Api {
@@ -258,16 +357,16 @@ async fn main() -> Result<(), std::io::Error> {
 
     // Open browser
     if let Err(e) = open::that("http://127.0.0.1:3030") {
-        eprintln!("Failed to open browser: {}", e);
+        warn!("Failed to open browser: {}", e);
     }
 
-    println!("Server running at http://127.0.0.1:3030");
-    println!("OpenAPI UI available at http://127.0.0.1:3030/");
-    println!("API endpoints available at http://127.0.0.1:3030/api/");
-    println!("WebSocket server running at ws://127.0.0.1:3031");
+    info!("Server running at http://127.0.0.1:3030");
+    info!("OpenAPI UI available at http://127.0.0.1:3030/");
+    info!("API endpoints available at http://127.0.0.1:3030/api/");
+    info!("WebSocket server running at ws://127.0.0.1:3031");
 
     // Wait for both servers
-    tokio::try_join!(server_handle, ws_handle).unwrap();
+    let _ = tokio::try_join!(server_handle, ws_handle).unwrap();
 
     Ok(())
 }
@@ -296,7 +395,7 @@ async fn load_all_transcripts() -> anyhow::Result<Vec<TranscriptFile>> {
                         });
                     }
                     Err(e) => {
-                        eprintln!("Error loading {}: {}", filename, e);
+                        error!("Error loading {}: {}", filename, e);
                     }
                 }
             }
@@ -347,7 +446,7 @@ async fn load_transcript_from_file(path: &StdPath) -> anyhow::Result<Vec<Transcr
 async fn start_websocket_server(sessions: SessionStore) -> anyhow::Result<()> {
     let addr = "127.0.0.1:3031";
     let listener = TcpListener::bind(&addr).await?;
-    println!("WebSocket server listening on: {}", addr);
+    info!("WebSocket server listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
         let sessions = sessions.clone();
@@ -359,21 +458,21 @@ async fn start_websocket_server(sessions: SessionStore) -> anyhow::Result<()> {
 
 async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) {
     let addr = stream.peer_addr().unwrap();
-    println!("New WebSocket connection from: {}", addr);
+    info!("New WebSocket connection from: {}", addr);
 
     let session_id = Arc::new(Mutex::new(String::new()));
     let session_id_clone = session_id.clone();
 
     let callback = move |req: &Request, response: Response| {
         let path = req.uri().path();
-        println!("WebSocket upgrade request path: {}", path);
+        debug!("WebSocket upgrade request path: {}", path);
 
         // Extract session ID from path like "/ws/{session_id}"
         if let Some(extracted_id) = path.strip_prefix("/ws/") {
             if !extracted_id.is_empty() {
                 if let Ok(mut id) = session_id_clone.try_lock() {
                     *id = extracted_id.to_string();
-                    println!("Extracted session ID: {}", *id);
+                    debug!("Extracted session ID: {}", *id);
                 }
             }
         }
@@ -384,7 +483,7 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
     let ws_stream = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
         Ok(ws_stream) => ws_stream,
         Err(e) => {
-            eprintln!("WebSocket handshake failed: {}", e);
+            error!("WebSocket handshake failed: {}", e);
             return;
         }
     };
@@ -395,7 +494,7 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
     };
 
     if session_id_str.is_empty() {
-        eprintln!("No session ID found in WebSocket request path");
+        error!("No session ID found in WebSocket request path");
         return;
     }
 
@@ -403,7 +502,7 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
     {
         let sessions_guard = sessions.lock().await;
         if !sessions_guard.contains_key(&session_id_str) {
-            eprintln!("Session not found: {}", session_id_str);
+            error!("Session not found: {}", session_id_str);
             return;
         }
     }
@@ -412,7 +511,7 @@ async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) 
 
     // Start broadcasting for this session
     if let Err(e) = broadcast_session_messages(&session_id_str, &mut ws_sender, sessions).await {
-        eprintln!("Error broadcasting messages: {}", e);
+        error!("Error broadcasting messages: {}", e);
     }
 }
 
@@ -453,7 +552,7 @@ async fn broadcast_session_messages(
             ws_sender.send(Message::Text(message)).await?;
 
             last_time = current_time;
-            println!(
+            debug!(
                 "Sent message at {}s: {} - {}",
                 current_time, record.speaker, record.sentence
             );
@@ -467,7 +566,7 @@ async fn broadcast_session_messages(
         // Clean up session after broadcasting is complete
         let mut sessions_guard = sessions.lock().await;
         sessions_guard.remove(session_id);
-        println!("Session {} completed and cleaned up", session_id);
+        info!("Session {} completed and cleaned up", session_id);
     } else {
         ws_sender
             .send(Message::Text("SESSION_NOT_FOUND".to_string()))
@@ -476,4 +575,3 @@ async fn broadcast_session_messages(
 
     Ok(())
 }
-
