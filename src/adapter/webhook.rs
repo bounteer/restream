@@ -8,7 +8,7 @@ pub struct WebhookBroadcaster {
 impl Broadcaster for WebhookBroadcaster {
     async fn broadcast(
         &self,
-        session_id: String,
+        session_id: i32,
         records: Vec<TranscriptRecord>,
     ) -> anyhow::Result<()> {
         broadcast_to_webhook(self.webhook_url.clone(), session_id, records).await
@@ -42,7 +42,7 @@ fn parse_time_to_time(time_str: &str) -> i32 {
 
 async fn broadcast_to_webhook(
     webhook_url: String,
-    session_id: String,
+    session_id: i32,
     records: Vec<TranscriptRecord>,
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
@@ -68,7 +68,7 @@ async fn broadcast_to_webhook(
 
         // Create broadcast message with session_id and body
         let broadcast_message = BroadcastMessage {
-            session_id: session_id.clone(),
+            session_id,
             body: record.clone(),
         };
 

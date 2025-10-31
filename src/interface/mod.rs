@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub trait Broadcaster {
     async fn broadcast(
         &self,
-        session_id: String,
+        session_id: i32,
         records: Vec<TranscriptRecord>,
     ) -> anyhow::Result<()>;
 }
@@ -31,7 +31,15 @@ pub struct TranscriptRecord {
 #[derive(Serialize, Deserialize, Debug, Clone, Object)]
 pub struct BroadcastMessage {
     /// Session ID for the broadcast
-    pub session_id: String,
+    pub session_id: i32,
+    /// Transcript record body
+    pub body: TranscriptRecord,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Object)]
+pub struct WebSocketMessage {
+    /// Session ID for the websocket message
+    pub session_id: i32,
     /// Transcript record body
     pub body: TranscriptRecord,
 }

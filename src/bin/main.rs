@@ -4,7 +4,7 @@ use poem::{Result, Route, Server, middleware::Tracing};
 use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService, payload::Json};
 use restream::adapter::{SessionStore, WebSocketBroadcaster, WebhookBroadcaster};
 use restream::consts::{WEBHOOK_URL_PROD, WEBHOOK_URL_TEST};
-use restream::interface::{Broadcaster, TranscriptFile, TranscriptRecord};
+use restream::interface::{Broadcaster, TranscriptFile, TranscriptRecord, WebSocketMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -86,9 +86,12 @@ impl Api {
         &self,
         #[oai(name = "filename", default = "default_filename")]
         filename: poem_openapi::param::Query<String>,
+        #[oai(name = "session_id")]
+        session_id: poem_openapi::param::Query<i32>,
     ) -> RewindResponse {
         let filename = filename.0;
-        info!("Rewinding transcript: {}", filename);
+        let session_id = session_id.0;
+        info!("Rewinding transcript: {} with session_id: {}", filename, session_id);
 
         // Load transcript from file
         let transcript_path = format!("transcript/{}", filename);
@@ -97,25 +100,25 @@ impl Api {
         match load_transcript_from_file(path).await {
             Ok(records) => {
                 // Create WebSocket broadcaster
-                let session_id = Uuid::new_v4().to_string();
+                let session_uuid = Uuid::new_v4().to_string();
                 let broadcaster = WebSocketBroadcaster {
-                    session_id: session_id.clone(),
+                    session_id,
                     sessions: self.sessions.clone(),
                 };
 
                 // Use the broadcaster to setup the session
-                match broadcaster.broadcast(session_id.clone(), records).await {
+                match broadcaster.broadcast(session_id, records).await {
                     Ok(_) => {
                         // Update the session with the filename
                         let mut sessions = self.sessions.lock().await;
-                        if let Some(session) = sessions.get_mut(&session_id) {
+                        if let Some(session) = sessions.get_mut(&session_uuid) {
                             session.filename = filename.clone();
                         }
 
                         // Return websocket information
                         let websocket_info = WebsocketInfo {
-                            websocket_url: format!("ws://0.0.0.0:8081/ws/{}", session_id),
-                            session_id,
+                            websocket_url: format!("ws://0.0.0.0:8081/ws/{}", session_uuid),
+                            session_id: session_uuid,
                             port: 8081,
                         };
 
@@ -154,9 +157,12 @@ impl Api {
         >,
         #[oai(name = "filename", default = "default_filename")]
         filename: poem_openapi::param::Query<String>,
+        #[oai(name = "session_id")]
+        session_id: poem_openapi::param::Query<i32>,
     ) -> WebhookBroadcastResponse {
         let use_test = use_test.0;
         let filename = filename.0;
+        let session_id = session_id.0;
 
         // Determine the webhook URL to use
         let webhook_url = if use_test {
@@ -167,8 +173,8 @@ impl Api {
 
         let environment = if use_test { "test" } else { "production" };
         info!(
-            "Starting webhook broadcast to {} environment: {} for file: {}",
-            environment, webhook_url, filename
+            "Starting webhook broadcast to {} environment: {} for file: {} with session_id: {}",
+            environment, webhook_url, filename, session_id
         );
 
         // Load transcript from file
@@ -183,11 +189,8 @@ impl Api {
                 };
 
                 // Start broadcasting in background
-                // Generate session ID for webhook broadcast
-                let webhook_session_id = Uuid::new_v4().to_string();
-
                 tokio::spawn(async move {
-                    if let Err(e) = broadcaster.broadcast(webhook_session_id, records).await {
+                    if let Err(e) = broadcaster.broadcast(session_id, records).await {
                         error!("Webhook broadcast failed: {}", e);
                     }
                 });
@@ -451,7 +454,11 @@ async fn broadcast_session_messages(
                 tokio::time::sleep(tokio::time::Duration::from_secs(wait_duration as u64)).await;
             }
 
-            let message = serde_json::to_string(&record)?;
+            let ws_message = WebSocketMessage {
+                session_id: session.session_id,
+                body: record.clone(),
+            };
+            let message = serde_json::to_string(&ws_message)?;
             ws_sender.send(Message::Text(message)).await?;
 
             last_time = current_time;
