@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/main /app/main
+COPY transcript ./transcript
 
 # Use non-root user for security
 RUN useradd -r -s /bin/false appuser
