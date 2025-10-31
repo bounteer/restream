@@ -1,0 +1,9 @@
+services:
+  restream:
+    build: .
+    container_name: restream-app
+    ports:
+      - "8000:8000"
+    environment:
+      RUST_LOG: "info"
+    restart: unless-stopped

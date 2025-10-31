@@ -2,10 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use poem::EndpointExt;
 use poem::{Result, Route, Server, middleware::Tracing};
 use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService, payload::Json};
-use restream::adapter::{
-    FirefliesBridge, FirefliesConfig, FirefliesWebhookForwarder, SessionStore,
-    WebSocketBroadcaster, WebhookBroadcaster,
-};
+use restream::adapter::{SessionStore, WebSocketBroadcaster, WebhookBroadcaster};
 use restream::consts::{WEBHOOK_URL_PROD, WEBHOOK_URL_TEST};
 use restream::interface::{Broadcaster, TranscriptFile, TranscriptRecord};
 use serde::{Deserialize, Serialize};
@@ -24,7 +21,7 @@ use tracing_subscriber::filter::Directive;
 use uuid::Uuid;
 
 fn default_filename() -> String {
-    "intake_call.csv".to_string()
+    "intake_call_test.csv".to_string()
 }
 
 fn default_test() -> bool {
@@ -53,19 +50,9 @@ struct WebhookBroadcastRequest {
     /// Use test environment instead of production (defaults to false)
     #[serde(default)]
     use_test: bool,
-    /// Filename of the transcript to broadcast (defaults to intake_call.csv)
+    /// Filename of the transcript to broadcast (defaults to intake_call_test.csv)
     #[serde(default = "default_filename")]
     filename: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Object)]
-pub struct FirefliesBridgeRequest {
-    /// Fireflies API token
-    pub api_token: String,
-    /// Fireflies transcript ID to listen to
-    pub transcript_id: String,
-    /// Webhook URL to forward events to
-    pub webhook_url: String,
 }
 
 #[derive(ApiResponse)]
@@ -81,16 +68,6 @@ enum WebhookBroadcastResponse {
     #[oai(status = 200)]
     Ok(Json<serde_json::Value>),
     /// Error occurred during broadcast
-    #[oai(status = 400)]
-    BadRequest(Json<serde_json::Value>),
-}
-
-#[derive(ApiResponse)]
-enum FirefliesBridgeResponse {
-    /// Fireflies bridge started successfully
-    #[oai(status = 200)]
-    Ok(Json<serde_json::Value>),
-    /// Error occurred during bridge setup
     #[oai(status = 400)]
     BadRequest(Json<serde_json::Value>),
 }
@@ -239,67 +216,6 @@ impl Api {
                     "status": "error",
                     "message": format!("Failed to load transcript: {}", e),
                     "filename": filename
-                })))
-            }
-        }
-    }
-
-    /// Start Fireflies to webhook bridge
-    #[oai(path = "/fireflies-bridge", method = "post")]
-    async fn start_fireflies_bridge(
-        &self,
-        bridge_request: Json<FirefliesBridgeRequest>,
-    ) -> FirefliesBridgeResponse {
-        let req = bridge_request.0;
-        info!(
-            "Starting Fireflies bridge for transcript: {} -> {}",
-            req.transcript_id, req.webhook_url
-        );
-
-        let config = FirefliesConfig {
-            api_token: req.api_token,
-            transcript_id: req.transcript_id.clone(),
-            webhook_url: req.webhook_url.clone(),
-        };
-
-        match FirefliesBridge::new(config) {
-            Ok((bridge, receiver)) => {
-                // Start the webhook forwarder
-                let forwarder = FirefliesWebhookForwarder::new(req.webhook_url.clone());
-                let forwarder_handle = tokio::spawn(async move {
-                    if let Err(e) = forwarder.start_forwarding(receiver).await {
-                        error!("Webhook forwarder error: {}", e);
-                    }
-                });
-
-                // Start the Fireflies bridge
-                let bridge_handle = tokio::spawn(async move {
-                    if let Err(e) = bridge.start().await {
-                        error!("Fireflies bridge error: {}", e);
-                    }
-                });
-
-                // Store handles if needed (for now just fire and forget)
-                tokio::spawn(async move {
-                    tokio::select! {
-                        _ = bridge_handle => {},
-                        _ = forwarder_handle => {},
-                    }
-                });
-
-                FirefliesBridgeResponse::Ok(Json(serde_json::json!({
-                    "status": "success",
-                    "message": "Fireflies bridge started successfully",
-                    "transcript_id": req.transcript_id,
-                    "webhook_url": req.webhook_url
-                })))
-            }
-            Err(e) => {
-                error!("Error starting Fireflies bridge: {}", e);
-                FirefliesBridgeResponse::BadRequest(Json(serde_json::json!({
-                    "status": "error",
-                    "message": format!("Failed to start Fireflies bridge: {}", e),
-                    "transcript_id": req.transcript_id
                 })))
             }
         }
