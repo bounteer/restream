@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 
 #[async_trait::async_trait]
 pub trait Broadcaster {
-    async fn broadcast(&self, session_id: String, records: Vec<TranscriptRecord>) -> anyhow::Result<()>;
+    async fn broadcast(
+        &self,
+        session_id: String,
+        records: Vec<TranscriptRecord>,
+    ) -> anyhow::Result<()>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Object)]

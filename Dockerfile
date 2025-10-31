@@ -1,49 +1,24 @@
-# Multi-stage build for Rust application
-FROM rust:1.91 as builder
-
-# Set working directory
+# ---- Build stage ----
+FROM rust:1.91 AS builder
 WORKDIR /app
 
-# Copy Cargo files
+# Copy manifests first to leverage caching
 COPY Cargo.toml Cargo.lock ./
-
-# Create dummy main to build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build dependencies (this will be cached)
-RUN cargo build --release
-
-# Copy source code
 COPY src ./src
 
-# Build the application
-RUN cargo build --release
+# Build your actual binary (main)
+RUN cargo build --release --bin main
 
-# Runtime stage with minimal base image
-FROM debian:bookworm-slim
+# Runtime stage, match builder distro (glibc 2.39) 
+FROM debian:trixie-slim 
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create app user
-RUN useradd -r -s /bin/false appuser
-
-# Set working directory
 WORKDIR /app
+COPY --from=builder /app/target/release/main /app/main
 
-# Copy binary from builder stage
-COPY --from=builder /app/target/release/restream /app/restream
-
-# Change ownership to app user
-RUN chown appuser:appuser /app/restream
-
-# Switch to app user
+# Use non-root user for security
+RUN useradd -r -s /bin/false appuser
 USER appuser
 
-# Expose port
-EXPOSE 8000
-
-# Run the application
-CMD ["./restream"]
+EXPOSE 8080 8081
+CMD ["./main"]

@@ -20,7 +20,11 @@ pub struct WebSocketBroadcaster {
 
 #[async_trait::async_trait]
 impl Broadcaster for WebSocketBroadcaster {
-    async fn broadcast(&self, session_id: String, records: Vec<TranscriptRecord>) -> anyhow::Result<()> {
+    async fn broadcast(
+        &self,
+        session_id: String,
+        records: Vec<TranscriptRecord>,
+    ) -> anyhow::Result<()> {
         let session = RewindSession {
             session_id: session_id.clone(),
             filename: "".to_string(),

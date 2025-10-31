@@ -1,4 +1,4 @@
-use crate::interface::{Broadcaster, TranscriptRecord, BroadcastMessage};
+use crate::interface::{BroadcastMessage, Broadcaster, TranscriptRecord};
 
 pub struct WebhookBroadcaster {
     pub webhook_url: String,
@@ -6,7 +6,11 @@ pub struct WebhookBroadcaster {
 
 #[async_trait::async_trait]
 impl Broadcaster for WebhookBroadcaster {
-    async fn broadcast(&self, session_id: String, records: Vec<TranscriptRecord>) -> anyhow::Result<()> {
+    async fn broadcast(
+        &self,
+        session_id: String,
+        records: Vec<TranscriptRecord>,
+    ) -> anyhow::Result<()> {
         broadcast_to_webhook(self.webhook_url.clone(), session_id, records).await
     }
 }
@@ -69,7 +73,11 @@ async fn broadcast_to_webhook(
         };
 
         // Send POST request to webhook
-        let response = client.post(&webhook_url).json(&broadcast_message).send().await;
+        let response = client
+            .post(&webhook_url)
+            .json(&broadcast_message)
+            .send()
+            .await;
 
         match response {
             Ok(resp) => {

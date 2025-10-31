@@ -15,7 +15,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::Directive;
 use uuid::Uuid;
@@ -43,16 +43,6 @@ struct WebsocketInfo {
     session_id: String,
     /// Port number for WebSocket connection
     port: u16,
-}
-
-#[derive(Serialize, Deserialize, Debug, Object)]
-struct WebhookBroadcastRequest {
-    /// Use test environment instead of production (defaults to false)
-    #[serde(default)]
-    use_test: bool,
-    /// Filename of the transcript to broadcast (defaults to intake_call_test.csv)
-    #[serde(default = "default_filename")]
-    filename: String,
 }
 
 #[derive(ApiResponse)]
@@ -124,9 +114,9 @@ impl Api {
 
                         // Return websocket information
                         let websocket_info = WebsocketInfo {
-                            websocket_url: format!("ws://127.0.0.1:3031/ws/{}", session_id),
+                            websocket_url: format!("ws://0.0.0.0:8081/ws/{}", session_id),
                             session_id,
-                            port: 3031,
+                            port: 8081,
                         };
 
                         RewindResponse::Ok(Json(websocket_info))
@@ -250,7 +240,7 @@ async fn main() -> Result<(), std::io::Error> {
     };
 
     let api_service =
-        OpenApiService::new(api, "restream API", "1.0").server("http://127.0.0.1:3030/api");
+        OpenApiService::new(api, "restream API", "1.0").server("http://0.0.0.0:8080/api");
     let ui = api_service.swagger_ui();
     let spec = api_service.spec_endpoint();
 
@@ -266,20 +256,17 @@ async fn main() -> Result<(), std::io::Error> {
 
     // Start server in background
     let server_handle = tokio::spawn(async move {
-        Server::new(poem::listener::TcpListener::bind("127.0.0.1:3030"))
+        Server::new(poem::listener::TcpListener::bind("0.0.0.0:8080"))
             .run(app)
             .await
     });
 
-    // Open browser
-    if let Err(e) = open::that("http://127.0.0.1:3030") {
-        warn!("Failed to open browser: {}", e);
-    }
+    // do not open browser
 
-    info!("Server running at http://127.0.0.1:3030");
-    info!("OpenAPI UI available at http://127.0.0.1:3030/");
-    info!("API endpoints available at http://127.0.0.1:3030/api/");
-    info!("WebSocket server running at ws://127.0.0.1:3031");
+    info!("Server running at http://0.0.0.0:8080");
+    info!("OpenAPI UI available at http://0.0.0.0:8080/");
+    info!("API endpoints available at http://0.0.0.0:8080/api/");
+    info!("WebSocket server running at ws://0.0.0.0:8081");
 
     // Wait for both servers
     let _ = tokio::try_join!(server_handle, ws_handle).unwrap();
@@ -360,7 +347,7 @@ async fn load_transcript_from_file(path: &StdPath) -> anyhow::Result<Vec<Transcr
 }
 
 async fn start_websocket_server(sessions: SessionStore) -> anyhow::Result<()> {
-    let addr = "127.0.0.1:3031";
+    let addr = "0.0.0.0:8081";
     let listener = TcpListener::bind(&addr).await?;
     info!("WebSocket server listening on: {}", addr);
 
