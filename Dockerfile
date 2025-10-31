@@ -21,5 +21,5 @@ COPY transcript ./transcript
 RUN useradd -r -s /bin/false appuser
 USER appuser
 
-EXPOSE 8080 8081
+EXPOSE 8080
 CMD ["./main"]

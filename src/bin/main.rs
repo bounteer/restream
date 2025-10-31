@@ -1,6 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
 use poem::EndpointExt;
-use poem::{Result, Route, Server, middleware::Tracing};
+use poem::{Result, Route, Server, middleware::Tracing, web::websocket::{WebSocket, WebSocketStream}, handler, web::Path};
 use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService, payload::Json};
 use restream::adapter::{SessionStore, WebSocketBroadcaster, WebhookBroadcaster};
 use restream::consts::{WEBHOOK_URL_PROD, WEBHOOK_URL_TEST};
@@ -11,10 +11,7 @@ use std::fs;
 use std::path::Path as StdPath;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::Directive;
@@ -117,9 +114,9 @@ impl Api {
 
                         // Return websocket information
                         let websocket_info = WebsocketInfo {
-                            websocket_url: format!("ws://0.0.0.0:8081/ws/{}", session_uuid),
+                            websocket_url: format!("ws://0.0.0.0:8080/ws/{}", session_uuid),
                             session_id: session_uuid,
-                            port: 8081,
+                            port: 8080,
                         };
 
                         RewindResponse::Ok(Json(websocket_info))
@@ -247,17 +244,16 @@ async fn main() -> Result<(), std::io::Error> {
     let ui = api_service.swagger_ui();
     let spec = api_service.spec_endpoint();
 
+    // Add WebSocket route handler
+    let ws_sessions = sessions.clone();
     let app = Route::new()
         .nest("/api", api_service)
         .at("/", ui)
         .at("/spec", spec)
+        .at("/ws/:session_id", websocket_handler.data(ws_sessions))
         .with(Tracing);
 
-    // Start WebSocket server
-    let ws_sessions = sessions.clone();
-    let ws_handle = tokio::spawn(async move { start_websocket_server(ws_sessions).await });
-
-    // Start server in background
+    // Start server
     let server_handle = tokio::spawn(async move {
         Server::new(poem::listener::TcpListener::bind("0.0.0.0:8080"))
             .run(app)
@@ -269,10 +265,10 @@ async fn main() -> Result<(), std::io::Error> {
     info!("Server running at http://0.0.0.0:8080");
     info!("OpenAPI UI available at http://0.0.0.0:8080/");
     info!("API endpoints available at http://0.0.0.0:8080/api/");
-    info!("WebSocket server running at ws://0.0.0.0:8081");
+    info!("WebSocket server running at ws://0.0.0.0:8080/ws/");
 
-    // Wait for both servers
-    let _ = tokio::try_join!(server_handle, ws_handle).unwrap();
+    // Wait for server
+    let _ = server_handle.await.unwrap();
 
     Ok(())
 }
@@ -309,6 +305,13 @@ async fn load_all_transcripts() -> anyhow::Result<Vec<TranscriptFile>> {
     }
 
     Ok(transcript_files)
+}
+
+#[handler]
+async fn websocket_handler(Path(session_id): Path<String>, websocket: WebSocket, sessions: poem::web::Data<&SessionStore>) -> impl poem::IntoResponse {
+    let sessions = sessions.0.clone();
+    
+    websocket.on_upgrade(move |socket| handle_websocket(socket, sessions, session_id))
 }
 
 fn parse_time_to_time(time_str: &str) -> i32 {
@@ -349,84 +352,29 @@ async fn load_transcript_from_file(path: &StdPath) -> anyhow::Result<Vec<Transcr
     Ok(transcripts)
 }
 
-async fn start_websocket_server(sessions: SessionStore) -> anyhow::Result<()> {
-    let addr = "0.0.0.0:8081";
-    let listener = TcpListener::bind(&addr).await?;
-    info!("WebSocket server listening on: {}", addr);
-
-    while let Ok((stream, _)) = listener.accept().await {
-        let sessions = sessions.clone();
-        tokio::spawn(handle_websocket_connection(stream, sessions));
-    }
-
-    Ok(())
-}
-
-async fn handle_websocket_connection(stream: TcpStream, sessions: SessionStore) {
-    let addr = stream.peer_addr().unwrap();
-    info!("New WebSocket connection from: {}", addr);
-
-    let session_id = Arc::new(Mutex::new(String::new()));
-    let session_id_clone = session_id.clone();
-
-    let callback = move |req: &Request, response: Response| {
-        let path = req.uri().path();
-        debug!("WebSocket upgrade request path: {}", path);
-
-        // Extract session ID from path like "/ws/{session_id}"
-        if let Some(extracted_id) = path.strip_prefix("/ws/") {
-            if !extracted_id.is_empty() {
-                if let Ok(mut id) = session_id_clone.try_lock() {
-                    *id = extracted_id.to_string();
-                    debug!("Extracted session ID: {}", *id);
-                }
-            }
-        }
-
-        Ok(response)
-    };
-
-    let ws_stream = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
-        Ok(ws_stream) => ws_stream,
-        Err(e) => {
-            error!("WebSocket handshake failed: {}", e);
-            return;
-        }
-    };
-
-    let session_id_str = {
-        let id_guard = session_id.lock().await;
-        id_guard.clone()
-    };
-
-    if session_id_str.is_empty() {
-        error!("No session ID found in WebSocket request path");
-        return;
-    }
+async fn handle_websocket(socket: WebSocketStream, sessions: SessionStore, session_id: String) {
+    info!("New WebSocket connection for session: {}", session_id);
 
     // Check if the session exists
     {
         let sessions_guard = sessions.lock().await;
-        if !sessions_guard.contains_key(&session_id_str) {
-            error!("Session not found: {}", session_id_str);
+        if !sessions_guard.contains_key(&session_id) {
+            error!("Session not found: {}", session_id);
             return;
         }
     }
 
-    let (mut ws_sender, _ws_receiver) = ws_stream.split();
+    let (mut sender, _receiver) = socket.split();
 
     // Start broadcasting for this session
-    if let Err(e) = broadcast_session_messages(&session_id_str, &mut ws_sender, sessions).await {
+    if let Err(e) = broadcast_session_messages_poem(&session_id, &mut sender, sessions).await {
         error!("Error broadcasting messages: {}", e);
     }
 }
 
-async fn broadcast_session_messages(
+async fn broadcast_session_messages_poem(
     session_id: &str,
-    ws_sender: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<TcpStream>,
-        Message,
-    >,
+    ws_sender: &mut futures_util::stream::SplitSink<WebSocketStream, poem::web::websocket::Message>,
     sessions: SessionStore,
 ) -> anyhow::Result<()> {
     let session = {
@@ -459,7 +407,7 @@ async fn broadcast_session_messages(
                 body: record.clone(),
             };
             let message = serde_json::to_string(&ws_message)?;
-            ws_sender.send(Message::Text(message)).await?;
+            ws_sender.send(poem::web::websocket::Message::Text(message)).await.map_err(|e| anyhow::anyhow!("Failed to send message: {}", e))?;
 
             last_time = current_time;
             debug!(
@@ -470,8 +418,8 @@ async fn broadcast_session_messages(
 
         // Send completion message
         ws_sender
-            .send(Message::Text("SESSION_COMPLETE".to_string()))
-            .await?;
+            .send(poem::web::websocket::Message::Text("SESSION_COMPLETE".to_string()))
+            .await.map_err(|e| anyhow::anyhow!("Failed to send completion message: {}", e))?;
 
         // Clean up session after broadcasting is complete
         let mut sessions_guard = sessions.lock().await;
@@ -479,8 +427,8 @@ async fn broadcast_session_messages(
         info!("Session {} completed and cleaned up", session_id);
     } else {
         ws_sender
-            .send(Message::Text("SESSION_NOT_FOUND".to_string()))
-            .await?;
+            .send(poem::web::websocket::Message::Text("SESSION_NOT_FOUND".to_string()))
+            .await.map_err(|e| anyhow::anyhow!("Failed to send not found message: {}", e))?;
     }
 
     Ok(())

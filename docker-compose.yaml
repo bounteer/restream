@@ -4,6 +4,5 @@ services:
     container_name: restream
     ports:
       - "8080"
-      - "8081"
     environment:
       RUST_LOG: "info"
