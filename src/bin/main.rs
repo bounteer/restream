@@ -240,7 +240,7 @@ async fn main() -> Result<(), std::io::Error> {
     };
 
     let api_service =
-        OpenApiService::new(api, "restream API", "1.0").server("http://0.0.0.0:8080/api");
+        OpenApiService::new(api, "restream API", "1.0").server("https://restream.bounteer.com/api");
     let ui = api_service.swagger_ui();
     let spec = api_service.spec_endpoint();
 
