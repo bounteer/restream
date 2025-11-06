@@ -240,7 +240,7 @@ async fn main() -> Result<(), std::io::Error> {
     };
 
     let api_service =
-        OpenApiService::new(api, "restream API", "1.0").server("https://restream.bounteer.com/api");
+        OpenApiService::new(api, "restream API", env!("CARGO_PKG_VERSION")).server("https://restream.bounteer.com/api");
     let ui = api_service.swagger_ui();
     let spec = api_service.spec_endpoint();
 
