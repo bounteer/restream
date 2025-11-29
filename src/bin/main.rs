@@ -83,11 +83,39 @@ impl Api {
         &self,
         #[oai(name = "filename", default = "default_filename")]
         filename: poem_openapi::param::Query<String>,
-        #[oai(name = "session_id")]
-        session_id: poem_openapi::param::Query<i32>,
+        #[oai(name = "job_description_enrichment_session")]
+        job_description_enrichment_session: poem_openapi::param::Query<Option<i32>>,
+        #[oai(name = "candidate_profile_enrichment_session")]
+        candidate_profile_enrichment_session: poem_openapi::param::Query<Option<i32>>,
     ) -> RewindResponse {
         let filename = filename.0;
-        let session_id = session_id.0;
+        let job_desc_session = job_description_enrichment_session.0;
+        let candidate_session = candidate_profile_enrichment_session.0;
+        
+        // Validate that exactly one session type is provided
+        let session_id = match (job_desc_session, candidate_session) {
+            (Some(id), None) => id,
+            (None, Some(id)) => id,
+            (Some(_), Some(_)) => {
+                error!("Both session types provided - only one allowed");
+                let websocket_info = WebsocketInfo {
+                    websocket_url: "".to_string(),
+                    session_id: "".to_string(),
+                    port: 0,
+                };
+                return RewindResponse::Ok(Json(websocket_info));
+            }
+            (None, None) => {
+                error!("No session type provided - exactly one required");
+                let websocket_info = WebsocketInfo {
+                    websocket_url: "".to_string(),
+                    session_id: "".to_string(),
+                    port: 0,
+                };
+                return RewindResponse::Ok(Json(websocket_info));
+            }
+        };
+        
         info!("Rewinding transcript: {} with session_id: {}", filename, session_id);
 
         // Load transcript from file
@@ -154,12 +182,35 @@ impl Api {
         >,
         #[oai(name = "filename", default = "default_filename")]
         filename: poem_openapi::param::Query<String>,
-        #[oai(name = "session_id")]
-        session_id: poem_openapi::param::Query<i32>,
+        #[oai(name = "job_description_enrichment_session")]
+        job_description_enrichment_session: poem_openapi::param::Query<Option<i32>>,
+        #[oai(name = "candidate_profile_enrichment_session")]
+        candidate_profile_enrichment_session: poem_openapi::param::Query<Option<i32>>,
     ) -> WebhookBroadcastResponse {
         let use_test = use_test.0;
         let filename = filename.0;
-        let session_id = session_id.0;
+        let job_desc_session = job_description_enrichment_session.0;
+        let candidate_session = candidate_profile_enrichment_session.0;
+        
+        // Validate that exactly one session type is provided
+        let session_id = match (job_desc_session, candidate_session) {
+            (Some(id), None) => id,
+            (None, Some(id)) => id,
+            (Some(_), Some(_)) => {
+                return WebhookBroadcastResponse::BadRequest(Json(serde_json::json!({
+                    "status": "error",
+                    "message": "Both session types provided - only one allowed",
+                    "filename": filename
+                })));
+            }
+            (None, None) => {
+                return WebhookBroadcastResponse::BadRequest(Json(serde_json::json!({
+                    "status": "error",
+                    "message": "No session type provided - exactly one required",
+                    "filename": filename
+                })));
+            }
+        };
 
         // Determine the webhook URL to use
         let webhook_url = if use_test {

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0]
+
+### Changed
+- Replaced single `session_id` parameter with `job_description_enrichment_session` and `candidate_profile_enrichment_session` parameters
+- Added validation to ensure exactly one session type is provided (returns error if both or neither are provided)
+- Updated both `/websocket-broadcast` and `/webhook-broadcast` endpoints with new session parameter validation
+
 ## [1.0.0]
 
 ### Removed
