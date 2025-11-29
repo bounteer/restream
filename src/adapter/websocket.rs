@@ -5,7 +5,8 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct RewindSession {
-    pub session_id: i32,
+    pub job_description_enrichment_session: Option<i32>,
+    pub candidate_profile_enrichment_session: Option<i32>,
     pub filename: String,
     pub records: Vec<TranscriptRecord>,
     pub current_index: usize,
@@ -14,7 +15,8 @@ pub struct RewindSession {
 pub type SessionStore = Arc<Mutex<HashMap<String, RewindSession>>>;
 
 pub struct WebSocketBroadcaster {
-    pub session_id: i32,
+    pub job_description_enrichment_session: Option<i32>,
+    pub candidate_profile_enrichment_session: Option<i32>,
     pub sessions: SessionStore,
 }
 
@@ -26,7 +28,8 @@ impl Broadcaster for WebSocketBroadcaster {
         records: Vec<TranscriptRecord>,
     ) -> anyhow::Result<()> {
         let session = RewindSession {
-            session_id,
+            job_description_enrichment_session: self.job_description_enrichment_session,
+            candidate_profile_enrichment_session: self.candidate_profile_enrichment_session,
             filename: "".to_string(),
             records,
             current_index: 0,

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Changed
+- Replaced generic `session_id` fields in output structures with specialized session parameters
+- Updated `WebsocketInfo` struct to use `job_description_enrichment_session` and `candidate_profile_enrichment_session` instead of `session_id`
+- Updated `BroadcastMessage` and `WebSocketMessage` structs to use specialized session parameters
+- Updated `RewindSession` and `WebSocketBroadcaster` to handle specialized session types
+- Enhanced API responses to clearly distinguish between job description and candidate profile enrichment sessions
+
 ## [1.1.0]
 
 ### Changed

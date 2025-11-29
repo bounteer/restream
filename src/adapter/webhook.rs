@@ -66,9 +66,12 @@ async fn broadcast_to_webhook(
             tokio::time::sleep(tokio::time::Duration::from_secs(wait_duration as u64)).await;
         }
 
-        // Create broadcast message with session_id and body
+        // Create broadcast message with session parameters and body
+        // Note: Currently treating all webhook sessions as job_description_enrichment_session
+        // This could be enhanced to distinguish based on session context
         let broadcast_message = BroadcastMessage {
-            session_id,
+            job_description_enrichment_session: Some(session_id),
+            candidate_profile_enrichment_session: None,
             body: record.clone(),
         };
 

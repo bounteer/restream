@@ -30,16 +30,20 @@ pub struct TranscriptRecord {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Object)]
 pub struct BroadcastMessage {
-    /// Session ID for the broadcast
-    pub session_id: i32,
+    /// Job description enrichment session ID (if applicable)
+    pub job_description_enrichment_session: Option<i32>,
+    /// Candidate profile enrichment session ID (if applicable)
+    pub candidate_profile_enrichment_session: Option<i32>,
     /// Transcript record body
     pub body: TranscriptRecord,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Object)]
 pub struct WebSocketMessage {
-    /// Session ID for the websocket message
-    pub session_id: i32,
+    /// Job description enrichment session ID (if applicable)
+    pub job_description_enrichment_session: Option<i32>,
+    /// Candidate profile enrichment session ID (if applicable)
+    pub candidate_profile_enrichment_session: Option<i32>,
     /// Transcript record body
     pub body: TranscriptRecord,
 }

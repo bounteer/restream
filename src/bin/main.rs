@@ -36,8 +36,10 @@ enum TranscriptResponse {
 struct WebsocketInfo {
     /// WebSocket URL for rewind connection
     websocket_url: String,
-    /// Session ID for the rewind
-    session_id: String,
+    /// Job description enrichment session ID (if applicable)
+    job_description_enrichment_session: Option<String>,
+    /// Candidate profile enrichment session ID (if applicable)
+    candidate_profile_enrichment_session: Option<String>,
     /// Port number for WebSocket connection
     port: u16,
 }
@@ -100,7 +102,8 @@ impl Api {
                 error!("Both session types provided - only one allowed");
                 let websocket_info = WebsocketInfo {
                     websocket_url: "".to_string(),
-                    session_id: "".to_string(),
+                    job_description_enrichment_session: None,
+                    candidate_profile_enrichment_session: None,
                     port: 0,
                 };
                 return RewindResponse::Ok(Json(websocket_info));
@@ -109,7 +112,8 @@ impl Api {
                 error!("No session type provided - exactly one required");
                 let websocket_info = WebsocketInfo {
                     websocket_url: "".to_string(),
-                    session_id: "".to_string(),
+                    job_description_enrichment_session: None,
+                    candidate_profile_enrichment_session: None,
                     port: 0,
                 };
                 return RewindResponse::Ok(Json(websocket_info));
@@ -127,7 +131,8 @@ impl Api {
                 // Create WebSocket broadcaster
                 let session_uuid = Uuid::new_v4().to_string();
                 let broadcaster = WebSocketBroadcaster {
-                    session_id,
+                    job_description_enrichment_session: job_desc_session,
+                    candidate_profile_enrichment_session: candidate_session,
                     sessions: self.sessions.clone(),
                 };
 
@@ -143,7 +148,8 @@ impl Api {
                         // Return websocket information
                         let websocket_info = WebsocketInfo {
                             websocket_url: format!("ws://0.0.0.0:8080/ws/{}", session_uuid),
-                            session_id: session_uuid,
+                            job_description_enrichment_session: if job_desc_session.is_some() { Some(session_uuid.clone()) } else { None },
+                            candidate_profile_enrichment_session: if candidate_session.is_some() { Some(session_uuid.clone()) } else { None },
                             port: 8080,
                         };
 
@@ -153,7 +159,8 @@ impl Api {
                         error!("Error setting up websocket broadcast: {}", e);
                         let websocket_info = WebsocketInfo {
                             websocket_url: "".to_string(),
-                            session_id: "".to_string(),
+                            job_description_enrichment_session: None,
+                            candidate_profile_enrichment_session: None,
                             port: 0,
                         };
                         RewindResponse::Ok(Json(websocket_info))
@@ -165,7 +172,8 @@ impl Api {
                 // Return error as websocket info for now (could be improved)
                 let websocket_info = WebsocketInfo {
                     websocket_url: "".to_string(),
-                    session_id: "".to_string(),
+                    job_description_enrichment_session: None,
+                    candidate_profile_enrichment_session: None,
                     port: 0,
                 };
                 RewindResponse::Ok(Json(websocket_info))
@@ -454,7 +462,8 @@ async fn broadcast_session_messages_poem(
             }
 
             let ws_message = WebSocketMessage {
-                session_id: session.session_id,
+                job_description_enrichment_session: session.job_description_enrichment_session,
+                candidate_profile_enrichment_session: session.candidate_profile_enrichment_session,
                 body: record.clone(),
             };
             let message = serde_json::to_string(&ws_message)?;
